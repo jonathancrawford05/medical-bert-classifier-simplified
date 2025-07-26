@@ -1,0 +1,118 @@
+# Enhanced 10-Class Medical Text Classification Taxonomy
+# Complete intelligent chunker with Symptoms (Sx) class added
+
+num_classes: 10
+
+class_labels:
+  0: "Rx"     # Medications and prescriptions
+  1: "Lx"     # Laboratory tests and results
+  2: "Dx"     # Medical diagnoses
+  3: "Px"     # Medical procedures
+  4: "Sx"     # Symptoms and patient complaints (NEW!)
+  5: "Other"  # Non-clinical/administrative content
+  6: "Vitals" # Vital signs and measurements
+  7: "FHx"    # Family medical history
+  8: "SDOH"   # Social determinants of health
+  9: "Tobacco" # Smoking and tobacco use
+
+# Reverse mapping for convenience
+label_to_id:
+  "Rx": 0
+  "Lx": 1
+  "Dx": 2
+  "Px": 3
+  "Sx": 4
+  "Other": 5
+  "Vitals": 6
+  "FHx": 7
+  "SDOH": 8
+  "Tobacco": 9
+
+# Class descriptions for data generation and understanding
+class_descriptions:
+  Rx: "Medications, prescriptions, drug therapies, dosages, and pharmaceutical treatments"
+  Lx: "Laboratory tests, blood work, imaging studies, diagnostic tests, and test results"
+  Dx: "Medical diagnoses, conditions, diseases, disorders, and diagnostic conclusions"
+  Px: "Medical procedures, surgeries, interventions, treatments, and therapeutic actions"
+  Sx: "Symptoms, patient complaints, subjective experiences, pain descriptions, and clinical presentations"
+  Other: "Administrative content, insurance information, non-clinical notes, and general documentation"
+  Vitals: "Vital signs, measurements, anthropometric data, blood pressure, heart rate, and physical metrics"
+  FHx: "Family medical history, genetic predispositions, hereditary conditions, and familial health patterns"
+  SDOH: "Social determinants of health, lifestyle factors, socioeconomic status, and environmental factors"
+  Tobacco: "Smoking history, tobacco use, cessation efforts, and nicotine-related content"
+
+# Enhanced class-specific configuration for data generation
+class_configs:
+  Rx:
+    weight: 1.0
+    challenge_examples: true
+    categories: ["medications", "prescriptions", "dosages", "drug_interactions", "side_effects"]
+    
+  Lx:
+    weight: 1.0
+    challenge_examples: true
+    categories: ["blood_tests", "imaging", "biopsies", "cultures", "monitoring"]
+    
+  Dx:
+    weight: 1.0
+    challenge_examples: true
+    categories: ["acute_conditions", "chronic_diseases", "mental_health", "infectious_diseases"]
+    
+  Px:
+    weight: 1.0
+    challenge_examples: true
+    categories: ["surgeries", "therapeutic_procedures", "diagnostic_procedures", "preventive_care"]
+    
+  Sx:  # NEW! Comprehensive symptoms configuration
+    weight: 1.0
+    challenge_examples: true
+    categories: ["pain", "respiratory", "gastrointestinal", "neurological", "psychiatric", "constitutional"]
+    symptom_types:
+      pain: ["chest pain", "abdominal pain", "headache", "back pain", "joint pain", "muscle pain"]
+      respiratory: ["shortness of breath", "cough", "wheezing", "chest tightness"]
+      gastrointestinal: ["nausea", "vomiting", "diarrhea", "constipation", "abdominal discomfort"]
+      neurological: ["dizziness", "numbness", "tingling", "weakness", "confusion", "memory loss"]
+      psychiatric: ["anxiety", "depression", "mood changes", "sleep disturbance", "fatigue"]
+      constitutional: ["fever", "chills", "night sweats", "weight loss", "weight gain", "appetite changes"]
+    
+  Other:
+    weight: 1.0
+    challenge_examples: true
+    categories: ["administrative", "insurance", "scheduling", "contact_info"]
+    
+  Vitals:
+    weight: 1.0
+    challenge_examples: true
+    measurement_types: ["blood_pressure", "heart_rate", "temperature", "respiratory_rate", "oxygen_saturation", "height", "weight", "bmi"]
+    
+  FHx:
+    weight: 1.0
+    challenge_examples: true
+    family_relations: ["mother", "father", "sister", "brother", "grandmother", "grandfather", "aunt", "uncle", "cousin"]
+    genetic_conditions: ["diabetes", "hypertension", "heart_disease", "cancer", "stroke", "dementia"]
+    
+  SDOH:
+    weight: 1.0
+    challenge_examples: true
+    domains: ["housing", "education", "employment", "income", "social_support", "transportation", "lifestyle"]
+    
+  Tobacco:
+    weight: 1.0
+    challenge_examples: true
+    tobacco_types: ["cigarettes", "cigars", "pipe", "chewing_tobacco", "vaping", "e-cigarettes"]
+    usage_patterns: ["current_smoker", "former_smoker", "never_smoked", "occasional", "heavy_smoker"]
+
+# Data generation settings
+data_generation:
+  samples_per_class: 1000
+  add_noise: true
+  cross_contamination: true
+  challenge_examples_ratio: 0.2
+  random_seed: 42
+
+# Validation settings
+validation:
+  min_samples_per_class: 800
+  max_samples_per_class: 1200
+  cross_validation: true
+  edge_case_testing: true

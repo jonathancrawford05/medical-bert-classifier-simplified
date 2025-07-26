@@ -1,0 +1,174 @@
+# Training Configuration for Medical BERT Classifier
+# Optimized for last-layer training with CPU/GPU flexibility
+
+# Training Strategy - Last Layer Only (Simplified)
+training_strategy:
+  approach: "last_layer_only"
+  freeze_backbone: true
+  trainable_components: ["classifier_layer"]
+  description: "Freeze BERT encoder and train only the final classification layer"
+
+# Device Configuration
+device:
+  auto_detect: true
+  prefer_gpu: true
+  fallback_to_cpu: true
+  cuda_device_id: 0
+  
+# CPU-Optimized Settings (Primary focus)
+cpu_config:
+  batch_size:
+    train: 8
+    eval: 16
+    predict: 32
+  learning_rate: 2e-4  # Slightly higher for last-layer training
+  num_epochs: 10
+  warmup_steps: 50
+  weight_decay: 0.01
+  gradient_accumulation_steps: 4  # Simulate larger batch size
+  dataloader_num_workers: 2
+  pin_memory: false
+
+# GPU-Optimized Settings (Optional acceleration)  
+gpu_config:
+  batch_size:
+    train: 16
+    eval: 32
+    predict: 64
+  learning_rate: 2e-4
+  num_epochs: 5  # Faster convergence with GPU
+  warmup_steps: 100
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  dataloader_num_workers: 4
+  pin_memory: true
+  mixed_precision: true  # FP16 for memory efficiency
+
+# Data Configuration
+data:
+  train_split: 0.8
+  val_split: 0.2
+  test_split: 0.0  # Use validation as test for simplicity
+  shuffle_train: true
+  shuffle_eval: false
+  random_seed: 42
+  
+# Last-Layer Classifier Configuration
+classifier:
+  dropout: 0.3  # Higher dropout for last layer only
+  hidden_size: 768  # BERT hidden size
+  activation: "gelu"
+  bias: true
+  weight_initialization: "xavier_uniform"
+
+# Optimization Settings
+optimizer:
+  type: "AdamW"
+  betas: [0.9, 0.999]
+  eps: 1e-8
+  amsgrad: false
+  
+scheduler:
+  type: "linear_warmup"
+  warmup_ratio: 0.1
+  
+# Early Stopping
+early_stopping:
+  enabled: true
+  patience: 3
+  monitor: "val_accuracy"
+  mode: "max"
+  min_delta: 0.001
+  restore_best_weights: true
+
+# Regularization
+regularization:
+  label_smoothing: 0.1
+  dropout_rate: 0.3
+  layer_norm_eps: 1e-12
+
+# Evaluation Configuration
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "confusion_matrix"]
+  average: "weighted"
+  class_report: true
+  save_predictions: true
+  
+# Checkpointing
+checkpointing:
+  enabled: true
+  save_best_only: true
+  save_frequency: "epoch"
+  max_checkpoints: 3
+  
+# Logging
+logging:
+  level: "INFO"
+  log_frequency: 50  # steps
+  tensorboard: false  # Keep simple for CPU focus
+  wandb: false
+  save_logs: true
+  
+# Model Comparison Settings
+comparison:
+  enabled: true
+  models_to_compare: ["bio_bert", "clinical_bio_bert", "blue_bert"]
+  cross_validation: true
+  cv_folds: 3  # Reduced for CPU efficiency
+  save_comparison_results: true
+
+# Prediction Settings
+prediction:
+  confidence_threshold: 0.5
+  return_probabilities: true
+  batch_prediction: true
+  
+# Performance Monitoring
+monitoring:
+  track_memory: true
+  track_training_time: true
+  track_inference_time: true
+  cpu_utilization: true
+  gpu_utilization: false  # Only if GPU available
+
+# Reproducibility
+reproducibility:
+  deterministic: true
+  benchmark: false  # False for CPU compatibility
+  set_seed_everywhere: true
+
+# Advanced Settings
+advanced:
+  gradient_clipping: 1.0
+  accumulate_grad_batches: 4
+  precision: 32  # Full precision for CPU stability
+  auto_lr_find: false
+  auto_scale_batch_size: false
+
+# Experimental Features (Future)
+experimental:
+  knowledge_distillation: false
+  ensemble_methods: false
+  active_learning: false
+  few_shot_learning: false
+
+# Resource Limits
+resource_limits:
+  max_memory_gb: 16
+  max_training_hours: 2
+  checkpoint_memory_limit_gb: 4
+  
+# Error Handling
+error_handling:
+  continue_on_error: false
+  retry_failed_batches: 3
+  fallback_batch_size: 4
+  
+# Output Configuration
+output:
+  save_model: true
+  save_tokenizer: true
+  save_config: true
+  save_training_args: true
+  output_dir: "models"
+  run_name: null  # Auto-generated

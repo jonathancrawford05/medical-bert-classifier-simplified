@@ -1,0 +1,111 @@
+# Medical BERT Models Configuration
+# Specialized transformer models for medical NLP
+
+models:
+  bio_bert:
+    name: "Bio-BERT"
+    model_name: "dmis-lab/biobert-base-cased-v1.1"
+    description: "BioBERT pre-trained on PubMed abstracts and PMC full-text articles"
+    domain: "biomedical_literature"
+    max_length: 512
+    case_sensitive: true
+    tokenizer_name: "dmis-lab/biobert-base-cased-v1.1"
+    
+  clinical_bio_bert:
+    name: "Clinical-Bio-BERT"
+    model_name: "emilyalsentzer/Bio_ClinicalBERT"
+    description: "BioBERT further pre-trained on clinical notes from MIMIC-III"
+    domain: "clinical_notes"
+    max_length: 512
+    case_sensitive: false
+    tokenizer_name: "emilyalsentzer/Bio_ClinicalBERT"
+    
+  blue_bert:
+    name: "BlueBERT"
+    model_name: "bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12"
+    description: "BERT pre-trained on PubMed abstracts and MIMIC-III clinical notes"
+    domain: "biomedical_clinical_mixed"
+    max_length: 512
+    case_sensitive: false
+    tokenizer_name: "bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12"
+
+# Default model selection
+default_model: "clinical_bio_bert"
+
+# Model comparison configuration
+comparison:
+  enabled: true
+  metrics: ["accuracy", "precision", "recall", "f1"]
+  cross_validation_folds: 5
+  
+# Additional medical BERT models for future expansion
+experimental_models:
+  pubmed_bert:
+    name: "PubMedBERT"
+    model_name: "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
+    description: "BERT trained from scratch on PubMed abstracts and full-text"
+    domain: "biomedical_literature"
+    status: "experimental"
+    
+  gatortron:
+    name: "GatorTron"
+    model_name: "UFNLP/gatortron-base"
+    description: "Clinical language model trained on large-scale clinical text"
+    domain: "clinical_notes"
+    status: "experimental"
+
+# Model-specific configurations
+bio_bert_config:
+  freeze_embeddings: true
+  freeze_encoder: true
+  trainable_layers: ["classifier"]
+  special_tokens: ["[CLS]", "[SEP]", "[MASK]", "[UNK]", "[PAD]"]
+  
+clinical_bio_bert_config:
+  freeze_embeddings: true
+  freeze_encoder: true
+  trainable_layers: ["classifier"]
+  special_tokens: ["[CLS]", "[SEP]", "[MASK]", "[UNK]", "[PAD]"]
+  
+blue_bert_config:
+  freeze_embeddings: true
+  freeze_encoder: true
+  trainable_layers: ["classifier"]
+  special_tokens: ["[CLS]", "[SEP]", "[MASK]", "[UNK]", "[PAD]"]
+
+# Performance benchmarks (from literature)
+benchmarks:
+  bio_bert:
+    biomedical_ner: 0.89
+    relation_extraction: 0.84
+    question_answering: 0.76
+    
+  clinical_bio_bert:
+    clinical_ner: 0.92
+    medical_text_classification: 0.87
+    clinical_outcome_prediction: 0.81
+    
+  blue_bert:
+    biomedical_ner: 0.88
+    clinical_ner: 0.90
+    mixed_domain_tasks: 0.85
+
+# Hardware recommendations
+hardware_recommendations:
+  bio_bert:
+    cpu_memory_gb: 8
+    gpu_memory_gb: 6
+    recommended_batch_size_cpu: 8
+    recommended_batch_size_gpu: 16
+    
+  clinical_bio_bert:
+    cpu_memory_gb: 8
+    gpu_memory_gb: 6
+    recommended_batch_size_cpu: 8
+    recommended_batch_size_gpu: 16
+    
+  blue_bert:
+    cpu_memory_gb: 8
+    gpu_memory_gb: 6
+    recommended_batch_size_cpu: 8
+    recommended_batch_size_gpu: 16
