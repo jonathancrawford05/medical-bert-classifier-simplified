@@ -280,6 +280,17 @@ Examples:
     if args.step in ['data', 'all']:
         data_path = generate_data(args.force_regenerate)
     
+    # For train/compare/evaluate steps, check if data exists if not already set
+    if data_path is None and args.step in ['train', 'compare', 'evaluate', 'all']:
+        expected_data_path = "data/synthetic_training_data_10class.csv"
+        if os.path.exists(expected_data_path):
+            data_path = expected_data_path
+            print(f"Using existing training data: {data_path}")
+        else:
+            print(f"❌ Training data not found: {expected_data_path}")
+            print("Please run: python main.py --step data")
+            sys.exit(1)
+    
     if args.step in ['train', 'all'] and data_path:
         train_model(args.model, data_path, args.epochs)
     
