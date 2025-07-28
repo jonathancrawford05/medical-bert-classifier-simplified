@@ -7,6 +7,9 @@ transformers>=4.30.0,<5.0.0
 tokenizers>=0.13.0,<1.0.0
 datasets>=2.12.0,<3.0.0
 
+# Configuration Management (Industry Standard)
+pydantic>=2.0.0,<3.0.0  # For robust config validation
+
 # Scientific Computing
 numpy>=1.24.0,<2.0.0
 pandas>=2.0.0,<3.0.0

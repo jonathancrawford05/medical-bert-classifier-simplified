@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-import yaml
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -17,6 +16,9 @@ import time
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Import Pydantic configuration management
+from ..config.schemas import ConfigManager, TrainingConfig
 
 
 class MedicalTextDataset(Dataset):
@@ -77,10 +79,10 @@ class LastLayerTrainer:
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         
-        # Load training configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-            
+        # Load and validate configuration using Pydantic
+        # This automatically handles all type conversions and validation!
+        self.config: TrainingConfig = ConfigManager.load_from_yaml(config_path)
+        
         # Setup device (CPU/GPU)
         self.device = self._setup_device()
         self.model.to(self.device)
@@ -108,11 +110,11 @@ class LastLayerTrainer:
     
     def _setup_device(self) -> torch.device:
         """Setup training device based on configuration"""
-        device_config = self.config['device']
+        device_config = self.config.device
         
-        if device_config['auto_detect'] and torch.cuda.is_available():
-            if device_config['prefer_gpu']:
-                device = torch.device(f"cuda:{device_config['cuda_device_id']}")
+        if device_config.auto_detect and torch.cuda.is_available():
+            if device_config.prefer_gpu:
+                device = torch.device(f"cuda:{device_config.cuda_device_id}")
                 print(f"Using GPU: {torch.cuda.get_device_name()}")
             else:
                 device = torch.device("cpu")
@@ -123,44 +125,45 @@ class LastLayerTrainer:
             
         return device
     
-    def _get_device_config(self) -> Dict:
+    def _get_device_config(self):
         """Get device-specific configuration"""
         if self.device.type == "cuda":
-            return self.config['gpu_config']
+            return self.config.gpu_config
         else:
-            return self.config['cpu_config']
+            return self.config.cpu_config
     
     def _create_dataloader(self, dataset: Dataset, is_train: bool) -> DataLoader:
         """Create data loader with device-appropriate settings"""
         device_config = self._get_device_config()
         
-        batch_size = device_config['batch_size']['train' if is_train else 'eval']
+        # Pydantic ensures these are already the correct types!
+        batch_size = device_config.batch_size.train if is_train else device_config.batch_size.eval
         
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=is_train,
-            num_workers=device_config['dataloader_num_workers'],
-            pin_memory=device_config.get('pin_memory', False)
+            num_workers=device_config.dataloader_num_workers,
+            pin_memory=device_config.pin_memory
         )
     
     def _setup_optimizer(self):
-        """Setup optimizer following notebook patterns"""
+        """Setup optimizer - no type conversion needed with Pydantic!"""
         device_config = self._get_device_config()
-        optimizer_config = self.config['optimizer']
+        optimizer_config = self.config.optimizer
         
         # Only optimize trainable parameters (classifier layer)
         trainable_params = self.model.get_trainable_parameters()
         
         optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=device_config['learning_rate'],
-            betas=optimizer_config['betas'],
-            eps=optimizer_config['eps'],
-            weight_decay=device_config['weight_decay']
+            lr=device_config.learning_rate,
+            betas=optimizer_config.betas,
+            eps=optimizer_config.eps,
+            weight_decay=device_config.weight_decay
         )
         
-        print(f"Optimizer setup: AdamW with LR={device_config['learning_rate']}")
+        print(f"Optimizer setup: AdamW with LR={device_config.learning_rate}")
         print(f"Trainable parameters: {self.model.get_num_trainable_parameters():,}")
         
         return optimizer
@@ -168,8 +171,9 @@ class LastLayerTrainer:
     def _setup_scheduler(self):
         """Setup learning rate scheduler"""
         device_config = self._get_device_config()
-        total_steps = len(self.train_dataloader) * device_config['num_epochs']
-        warmup_steps = device_config['warmup_steps']
+        
+        total_steps = len(self.train_dataloader) * device_config.num_epochs
+        warmup_steps = device_config.warmup_steps
         
         scheduler = get_linear_schedule_with_warmup(
             self.optimizer,
@@ -206,11 +210,11 @@ class LastLayerTrainer:
             self.optimizer.zero_grad()
             loss.backward()
             
-            # Gradient clipping (from notebook best practices)
-            if self.config['advanced'].get('gradient_clipping'):
+            # Gradient clipping
+            if self.config.advanced.gradient_clipping:
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), 
-                    self.config['advanced']['gradient_clipping']
+                    self.config.advanced.gradient_clipping
                 )
             
             self.optimizer.step()
@@ -279,7 +283,7 @@ class LastLayerTrainer:
         Main training loop following notebook patterns
         """
         if num_epochs is None:
-            num_epochs = self._get_device_config()['num_epochs']
+            num_epochs = self._get_device_config().num_epochs
         
         print(f"\nStarting training for {num_epochs} epochs...")
         print(f"Training samples: {len(self.train_dataset)}")
@@ -305,7 +309,8 @@ class LastLayerTrainer:
             # Save best model (following notebook pattern)
             if val_accuracy > self.best_val_accuracy:
                 self.best_val_accuracy = val_accuracy
-                self.best_model_state = self.model.state_dict().copy()\n                print(f"New best model! Accuracy: {val_accuracy:.4f}")
+                self.best_model_state = self.model.state_dict().copy()
+                print(f"New best model! Accuracy: {val_accuracy:.4f}")
             
             # Print epoch summary
             print(f"Train Loss: {train_loss:.4f}")
@@ -337,13 +342,13 @@ class LastLayerTrainer:
     
     def _should_early_stop(self) -> bool:
         """Check if early stopping should be triggered"""
-        early_stop_config = self.config['early_stopping']
+        early_stop_config = self.config.early_stopping
         
-        if not early_stop_config['enabled']:
+        if not early_stop_config.enabled:
             return False
         
-        patience = early_stop_config['patience']
-        min_delta = early_stop_config['min_delta']
+        patience = early_stop_config.patience
+        min_delta = early_stop_config.min_delta
         
         if len(self.val_accuracies) < patience:
             return False
