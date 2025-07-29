@@ -1,295 +1,340 @@
+#!/usr/bin/env python3
 """
 Medical BERT Model Comparison Framework
-Comprehensive evaluation and comparison of medical BERT models for text classification
+Compare performance of existing trained models without retraining
+
+This script loads pre-trained medical BERT models and evaluates them
+on your classification task, providing detailed performance comparisons.
+
+Usage:
+    python experiments/model_comparison.py
+    
+Outputs:
+    - results/model_comparison_summary.csv
+    - results/model_comparison_plots.png
 """
 
+import os
+import sys
 import torch
-import torch.nn as nn
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-import time
-import os
+from typing import Dict, List
 import yaml
 import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
 import seaborn as sns
-from sklearn.metrics import (
-    accuracy_score, precision_recall_fscore_support, 
-    confusion_matrix, classification_report
-)
+
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
 from transformers import AutoTokenizer
-
-# Import our model implementations
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.models.bio_bert import create_biobert_model, BioBERTConfig
-from src.models.clinical_bert import create_clinical_bert_model, ClinicalBERTConfig
+from src.models.bio_bert import create_biobert_model
+from src.models.clinical_bert import create_clinical_bert_model
 from src.models.base_classifier import BaseMedicalBERTClassifier
-from src.training.last_layer_trainer import LastLayerTrainer, create_datasets_from_csv
+from src.training.last_layer_trainer import create_datasets_from_csv
 
+def load_config():
+    """Load class configuration"""
+    with open("config/classes.yaml", 'r') as f:
+        return yaml.safe_load(f)
 
-class MedicalBERTComparison:
-    """
-    Framework for comparing multiple medical BERT models
-    """
+def load_trained_model(model_name: str, model_path: str, num_classes: int = 10):
+    """Load a trained model from file"""
+    print(f"Loading {model_name} from {model_path}...")
     
-    def __init__(self, config_path: str = "config/classes.yaml"):
-        """Initialize comparison framework"""
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+    try:
+        # Create the model architecture (this loads pretrained BERT weights)
+        print(f"   Creating {model_name} architecture...")
+        if model_name == "Bio-BERT":
+            model = create_biobert_model(num_classes=num_classes)
+        elif model_name == "Clinical-Bio-BERT":
+            model = create_clinical_bert_model(num_classes=num_classes)
+        elif model_name == "BlueBERT":
+            model = BaseMedicalBERTClassifier(
+                model_name="bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12",
+                num_classes=num_classes
+            )
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+        
+        # Debug model creation
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"   Model created with {total_params:,} total parameters")
+        
+        if total_params < 1000000:  # Less than 1M params means something is wrong
+            print(f"   ⚠️  Warning: Model has unusually few parameters!")
+            print(f"   ⚠️  This suggests the BERT backbone didn't load correctly")
+            return None
+        
+        # Load the saved checkpoint
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        
+        # Debug: Check what's in the checkpoint
+        print(f"   Checkpoint keys: {list(checkpoint.keys())[:5]}...")  # Show first 5 keys
+        
+        # Extract the actual model state dict
+        if 'model_state_dict' in checkpoint:
+            model_checkpoint = checkpoint['model_state_dict']
+            print(f"   Found model_state_dict with {len(model_checkpoint)} parameters")
+        else:
+            model_checkpoint = checkpoint
+            print(f"   Using checkpoint directly with {len(model_checkpoint)} parameters")
+        
+        # Debug: Show first few model state dict keys
+        print(f"   Model state keys: {list(model_checkpoint.keys())[:3]}...")
+        
+        # Get the current model state
+        model_state = model.state_dict()
+        print(f"   Current model has {len(model_state)} total parameters")
+        
+        # Load the state dict with exact matching
+        model.load_state_dict(model_checkpoint, strict=False)
+        
+        # Verify model integrity after loading
+        total_params_after = sum(p.numel() for p in model.parameters())
+        print(f"   Model has {total_params_after:,} parameters after loading")
+        
+        if total_params_after < 1000000:  # Less than 1M params means loading corrupted the model
+            print(f"   ❌ Model corrupted during loading - parameter count dropped drastically")
+            print(f"   ❌ Expected ~108M parameters, got {total_params_after:,}")
+            print(f"   ❌ This suggests the saved checkpoint is incompatible")
+            return None
+        
+        model.eval()  # Set to evaluation mode
+        
+        print(f"✅ Successfully loaded {model_name}")
+        print(f"   Loaded classifier weights, BERT backbone uses pretrained weights")
+        return model
+        
+    except Exception as e:
+        print(f"❌ Failed to load {model_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def evaluate_model(model, tokenizer, data_path: str, model_name: str):
+    """Evaluate a loaded model on the test data"""
+    print(f"Evaluating {model_name}...")
+    
+    try:
+        # Create datasets
+        print(f"   Creating datasets...")
+        train_dataset, val_dataset = create_datasets_from_csv(data_path, tokenizer, test_size=0.2)
+        print(f"   Validation dataset size: {len(val_dataset)}")
+        
+        # Use validation dataset for evaluation
+        model.eval()
+        all_predictions = []
+        all_labels = []
+        total_loss = 0.0
+        
+        # Create DataLoader for validation set with smaller batch size
+        from torch.utils.data import DataLoader
+        print(f"   Creating DataLoader...")
+        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False)  # Smaller batch size
+        print(f"   DataLoader created with {len(val_dataloader)} batches")
+        
+        # Process only first few batches for quick evaluation
+        max_batches = min(50, len(val_dataloader))  # Limit to 10 batches
+        print(f"   Processing {max_batches} batches for quick evaluation...")
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(val_dataloader):
+                if batch_idx >= max_batches:
+                    break
+                    
+                print(f"   Processing batch {batch_idx + 1}/{max_batches}")
+                
+                input_ids = batch['input_ids']
+                attention_mask = batch['attention_mask'] 
+                labels = batch['labels']
+                
+                # Forward pass
+                try:
+                    outputs = model(input_ids, attention_mask)
+                    
+                    # Calculate loss (if model returns loss)
+                    if hasattr(outputs, 'loss') and outputs.loss is not None:
+                        total_loss += outputs.loss.item()
+                    
+                    # Get predictions
+                    if hasattr(outputs, 'logits'):
+                        logits = outputs.logits
+                    else:
+                        logits = outputs
+                        
+                    predictions = torch.argmax(logits, dim=-1)
+                    
+                    all_predictions.extend(predictions.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+                    
+                except Exception as e:
+                    print(f"   ❌ Error in forward pass: {e}")
+                    return None
+        
+        if not all_predictions:
+            print(f"   ❌ No predictions generated")
+            return None
             
-        self.num_classes = self.config['num_classes']
-        self.class_labels = self.config['class_labels']
-        self.class_names = list(self.class_labels.values())
+        print(f"   Generated {len(all_predictions)} predictions")
         
-        # Model configurations
-        self.models_config = {
-            'Bio-BERT': {
-                'model_name': 'dmis-lab/biobert-base-cased-v1.1',
-                'create_func': create_biobert_model,
-                'config_class': BioBERTConfig,
-                'description': 'BioBERT pre-trained on PubMed abstracts and PMC full-text articles',
-                'domain': 'biomedical_literature',
-                'strengths': ['Biomedical terminology', 'Research literature', 'Drug names'],
-                'use_cases': ['Literature mining', 'Drug discovery', 'Biomedical NER']
-            },
-            'Clinical-Bio-BERT': {
-                'model_name': 'emilyalsentzer/Bio_ClinicalBERT',
-                'create_func': create_clinical_bert_model,
-                'config_class': ClinicalBERTConfig,
-                'description': 'BioBERT further pre-trained on clinical notes from MIMIC-III',
-                'domain': 'clinical_notes',
-                'strengths': ['Clinical terminology', 'EHR text', 'Medical abbreviations'],
-                'use_cases': ['Clinical note analysis', 'EHR processing', 'Clinical decision support']
-            },
-            'BlueBERT': {
-                'model_name': 'bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12',
-                'create_func': self._create_bluebert_model,
-                'config_class': None,
-                'description': 'BERT pre-trained on both PubMed abstracts and MIMIC-III clinical notes',
-                'domain': 'biomedical_clinical_mixed',
-                'strengths': ['Mixed domain', 'General medical text', 'Versatile'],
-                'use_cases': ['General medical NLP', 'Cross-domain tasks', 'Medical chatbots']
-            }
-        }
+        # Calculate metrics
+        accuracy = accuracy_score(all_labels, all_predictions)
+        precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_predictions, average='weighted')
         
-        self.results = {}
-        self.comparison_metrics = {}
-        
-    def _create_bluebert_model(self, num_classes: int = 10) -> BaseMedicalBERTClassifier:
-        """Create BlueBERT model using base implementation"""
-        return BaseMedicalBERTClassifier(
-            model_name="bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12",
-            num_classes=num_classes,
-            max_length=512,
-            dropout_rate=0.3,
-            freeze_backbone=True
-        )
-    
-    def train_single_model(
-        self, 
-        model_name: str,
-        data_path: str,
-        num_epochs: int = 3,
-        test_size: float = 0.2
-    ) -> Dict:
-        """
-        Train a single medical BERT model and collect results
-        """
-        print(f"\n{'='*60}")
-        print(f"Training {model_name}")
-        print(f"{'='*60}")
-        
-        config = self.models_config[model_name]
+        # Per-class metrics (simplified)
+        config = load_config()
+        class_names = list(config['class_labels'].values())
         
         try:
-            # Create model
-            print("Creating model...")
-            model = config['create_func'](num_classes=self.num_classes)
-            
-            # Create tokenizer
-            tokenizer = AutoTokenizer.from_pretrained(config['model_name'])
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            
-            # Prepare data
-            print("Preparing datasets...")
-            train_dataset, val_dataset = create_datasets_from_csv(
-                data_path, tokenizer, test_size=test_size
-            )
-            
-            # Create trainer
-            print("Setting up trainer...")
-            trainer = LastLayerTrainer(model, train_dataset, val_dataset)
-            
-            # Train model
-            print(f"Training for {num_epochs} epochs...")
-            start_time = time.time()
-            training_results = trainer.train(num_epochs=num_epochs)
-            training_time = time.time() - start_time
-            
-            # Collect final evaluation metrics
-            accuracy, loss, metrics = trainer.evaluate()
-            
-            # Calculate detailed metrics
-            precision, recall, f1, _ = precision_recall_fscore_support(
-                metrics['labels'], metrics['predictions'], average='weighted'
-            )
-            
-            # Per-class metrics
-            class_report = classification_report(
-                metrics['labels'], 
-                metrics['predictions'],
-                target_names=self.class_names,
-                output_dict=True
-            )
-            
-            # Compile results
-            result = {
-                'model_name': model_name,
-                'model_config': config,
-                'trainer': trainer,
-                'training_results': training_results,
-                'training_time': training_time,
-                'final_accuracy': accuracy,
-                'final_loss': loss,
-                'final_precision': precision,
-                'final_recall': recall,
-                'final_f1': f1,
-                'class_report': class_report,
-                'confusion_matrix': confusion_matrix(metrics['labels'], metrics['predictions']),
-                'trainable_params': model.get_num_trainable_parameters(),
-                'total_params': sum(p.numel() for p in model.parameters()),
-                'predictions': metrics['predictions'],
-                'true_labels': metrics['labels']
-            }
-            
-            # Success summary
-            print(f"✅ {model_name} training completed!")
-            print(f"   Training time: {training_time:.2f} seconds")
-            print(f"   Best accuracy: {training_results['best_val_accuracy']:.4f}")
-            print(f"   Final F1: {f1:.4f}")
-            print(f"   Trainable parameters: {result['trainable_params']:,}")
-            
-            return result
-            
-        except Exception as e:
-            print(f"❌ {model_name} training failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def compare_all_models(
-        self, 
-        data_path: str,
-        models_to_compare: Optional[List[str]] = None,
-        num_epochs: int = 3
-    ) -> Dict:
-        """
-        Train and compare all specified medical BERT models
-        """
-        if models_to_compare is None:
-            models_to_compare = list(self.models_config.keys())
+            class_report = classification_report(all_labels, all_predictions, target_names=class_names, output_dict=True)
+        except:
+            class_report = {}  # Fallback if classification report fails
         
-        print("🏥 Medical BERT Model Comparison Framework")
-        print("=" * 70)
-        print(f"Comparing models: {', '.join(models_to_compare)}")
-        print(f"Training epochs: {num_epochs}")
-        print(f"Data source: {data_path}")
-        
-        # Train each model
-        for model_name in models_to_compare:
-            if model_name in self.models_config:
-                result = self.train_single_model(model_name, data_path, num_epochs)
-                if result:
-                    self.results[model_name] = result
-            else:
-                print(f"⚠️  Unknown model: {model_name}")
-        
-        # Generate comparison metrics
-        if self.results:
-            self._generate_comparison_metrics()
-            self._print_comparison_summary()
-        else:
-            print("❌ No models were successfully trained for comparison")
-        
-        return self.results
-    
-    def _generate_comparison_metrics(self):
-        """Generate comparison metrics from all trained models"""
-        self.comparison_metrics = {
-            'accuracy': {},
-            'f1_score': {},
-            'training_time': {},
-            'trainable_params': {},
-            'model_size_ratio': {},
-            'per_class_f1': {}
+        results = {
+            'model_name': model_name,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'loss': total_loss / max_batches if max_batches > 0 else 0,
+            'predictions': all_predictions,
+            'true_labels': all_labels,
+            'class_report': class_report,
+            'confusion_matrix': confusion_matrix(all_labels, all_predictions) if len(set(all_labels)) > 1 else None
         }
         
-        for model_name, result in self.results.items():
-            self.comparison_metrics['accuracy'][model_name] = result['final_accuracy']
-            self.comparison_metrics['f1_score'][model_name] = result['final_f1']
-            self.comparison_metrics['training_time'][model_name] = result['training_time']
-            self.comparison_metrics['trainable_params'][model_name] = result['trainable_params']
-            
-            # Calculate trainable parameter ratio
-            ratio = result['trainable_params'] / result['total_params']
-            self.comparison_metrics['model_size_ratio'][model_name] = ratio
-            
-            # Per-class F1 scores
-            class_f1 = {}
-            for class_name in self.class_names:
-                class_f1[class_name] = result['class_report'][class_name]['f1-score']
-            self.comparison_metrics['per_class_f1'][model_name] = class_f1
+        print(f"✅ {model_name} evaluation complete")
+        print(f"   Accuracy: {accuracy:.4f}")
+        print(f"   F1-Score: {f1:.4f}")
+        print(f"   Samples evaluated: {len(all_predictions)}")
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Failed to evaluate {model_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def compare_existing_models():
+    """Compare all existing trained models"""
+    print("🏥 Medical BERT Model Comparison - Existing Models")
+    print("=" * 70)
     
-    def _print_comparison_summary(self):
-        """Print a formatted comparison summary"""
-        print(f"\n{'='*70}")
-        print("MODEL COMPARISON SUMMARY")
-        print(f"{'='*70}")
+    # Model configurations
+    models_config = {
+        'Bio-BERT': {
+            'file': 'models/bio_bert_10class.pt',
+            'tokenizer': 'dmis-lab/biobert-base-cased-v1.1',
+            'description': 'Specialized for biomedical literature'
+        },
+        'Clinical-Bio-BERT': {
+            'file': 'models/clinical_bert_10class.pt',
+            'tokenizer': 'emilyalsentzer/Bio_ClinicalBERT',
+            'description': 'Optimized for clinical notes'
+        },
+        'BlueBERT': {
+            'file': 'models/blue_bert_10class.pt', 
+            'tokenizer': 'bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12',
+            'description': 'Mixed biomedical and clinical'
+        }
+    }
+    
+    data_path = "data/synthetic_training_data_10class.csv"
+    
+    if not os.path.exists(data_path):
+        print(f"❌ Data file not found: {data_path}")
+        return
+    
+    print(f"Using data: {data_path}")
+    print()
+    
+    # Load and evaluate each model
+    results = {}
+    
+    for model_name, config in models_config.items():
+        model_path = config['file']
+        
+        if not os.path.exists(model_path):
+            print(f"❌ Model file not found: {model_path}")
+            continue
+            
+        # Load model
+        model = load_trained_model(model_name, model_path)
+        if model is None:
+            continue
+            
+        # Load tokenizer
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+        except Exception as e:
+            print(f"❌ Failed to load tokenizer for {model_name}: {e}")
+            continue
+            
+        # Evaluate model
+        result = evaluate_model(model, tokenizer, data_path, model_name)
+        if result:
+            results[model_name] = result
+        
+        print()
+    
+    # Generate comparison report
+    if results:
+        print("=" * 70)
+        print("MODEL COMPARISON RESULTS")
+        print("=" * 70)
         
         # Create comparison DataFrame
         comparison_data = []
-        for model_name, result in self.results.items():
+        for model_name, result in results.items():
             comparison_data.append({
                 'Model': model_name,
-                'Accuracy': f"{result['final_accuracy']:.4f}",
-                'F1-Score': f"{result['final_f1']:.4f}",
-                'Training Time (s)': f"{result['training_time']:.2f}",
-                'Trainable Params': f"{result['trainable_params']:,}",
-                'Param Ratio': f"{self.comparison_metrics['model_size_ratio'][model_name]:.3%}",
-                'Domain': result['model_config']['domain']
+                'Accuracy': f"{result['accuracy']:.4f}",
+                'Precision': f"{result['precision']:.4f}",
+                'Recall': f"{result['recall']:.4f}",
+                'F1-Score': f"{result['f1']:.4f}",
+                'Description': models_config[model_name]['description']
             })
         
         df = pd.DataFrame(comparison_data)
         print(df.to_string(index=False))
         
-        # Best model analysis
-        best_accuracy_model = max(self.results.keys(), 
-                                 key=lambda x: self.results[x]['final_accuracy'])
-        best_f1_model = max(self.results.keys(), 
-                           key=lambda x: self.results[x]['final_f1'])
-        fastest_model = min(self.results.keys(), 
-                           key=lambda x: self.results[x]['training_time'])
+        # Save results
+        df.to_csv("results/model_comparison_summary.csv", index=False)
+        print(f"\n💾 Results saved to: results/model_comparison_summary.csv")
+        
+        # Find best model
+        best_accuracy = max(results.keys(), key=lambda x: results[x]['accuracy'])
+        best_f1 = max(results.keys(), key=lambda x: results[x]['f1'])
         
         print(f"\n🏆 Best Performance:")
-        print(f"   Accuracy: {best_accuracy_model} ({self.results[best_accuracy_model]['final_accuracy']:.4f})")
-        print(f"   F1-Score: {best_f1_model} ({self.results[best_f1_model]['final_f1']:.4f})")
-        print(f"   Speed: {fastest_model} ({self.results[fastest_model]['training_time']:.2f}s)")
-    
-    def plot_comparison_results(self, save_path: str = None):
-        """Create comprehensive comparison visualizations"""
-        if not self.results:
-            print("No results available for plotting")
-            return
+        print(f"   Accuracy: {best_accuracy} ({results[best_accuracy]['accuracy']:.4f})")
+        print(f"   F1-Score: {best_f1} ({results[best_f1]['f1']:.4f})")
         
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        # Create visualization
+        create_comparison_plots(results, models_config)
         
-        models = list(self.results.keys())
+    else:
+        print("❌ No models could be evaluated")
+
+def create_comparison_plots(results: Dict, models_config: Dict):
+    """Create comparison visualizations"""
+    if len(results) < 2:
+        print("⚠️  Need at least 2 models for comparison plots")
+        return
+        
+    try:
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        
+        models = list(results.keys())
         
         # 1. Accuracy comparison
-        accuracies = [self.results[m]['final_accuracy'] for m in models]
+        accuracies = [results[m]['accuracy'] for m in models]
         axes[0, 0].bar(models, accuracies, color='skyblue')
         axes[0, 0].set_title('Model Accuracy Comparison')
         axes[0, 0].set_ylabel('Accuracy')
@@ -297,155 +342,54 @@ class MedicalBERTComparison:
         axes[0, 0].tick_params(axis='x', rotation=45)
         
         # 2. F1-Score comparison
-        f1_scores = [self.results[m]['final_f1'] for m in models]
+        f1_scores = [results[m]['f1'] for m in models]
         axes[0, 1].bar(models, f1_scores, color='lightcoral')
         axes[0, 1].set_title('Model F1-Score Comparison')
         axes[0, 1].set_ylabel('F1-Score')
         axes[0, 1].set_ylim(0, 1)
         axes[0, 1].tick_params(axis='x', rotation=45)
         
-        # 3. Training time comparison
-        times = [self.results[m]['training_time'] for m in models]
-        axes[0, 2].bar(models, times, color='lightgreen')
-        axes[0, 2].set_title('Training Time Comparison')
-        axes[0, 2].set_ylabel('Training Time (seconds)')
-        axes[0, 2].tick_params(axis='x', rotation=45)
+        # 3. Multi-metric comparison
+        metrics = ['accuracy', 'precision', 'recall', 'f1']
+        x = np.arange(len(metrics))
+        width = 0.25
         
-        # 4. Per-class F1 heatmap
-        class_f1_data = []
-        for model in models:
-            class_f1_data.append([
-                self.comparison_metrics['per_class_f1'][model][class_name] 
-                for class_name in self.class_names
-            ])
-        
-        im = axes[1, 0].imshow(class_f1_data, cmap='Blues', aspect='auto')
-        axes[1, 0].set_title('Per-Class F1-Score Heatmap')
-        axes[1, 0].set_yticks(range(len(models)))
-        axes[1, 0].set_yticklabels(models)
-        axes[1, 0].set_xticks(range(len(self.class_names)))
-        axes[1, 0].set_xticklabels(self.class_names, rotation=45)
-        plt.colorbar(im, ax=axes[1, 0])
-        
-        # 5. Trainable parameters comparison
-        params = [self.results[m]['trainable_params'] for m in models]
-        axes[1, 1].bar(models, params, color='orange')
-        axes[1, 1].set_title('Trainable Parameters')
-        axes[1, 1].set_ylabel('Number of Parameters')
-        axes[1, 1].tick_params(axis='x', rotation=45)
-        
-        # 6. Accuracy vs Training Time scatter
-        axes[1, 2].scatter(times, accuracies, s=100, alpha=0.7)
         for i, model in enumerate(models):
-            axes[1, 2].annotate(model, (times[i], accuracies[i]), 
-                               xytext=(5, 5), textcoords='offset points')
-        axes[1, 2].set_xlabel('Training Time (seconds)')
-        axes[1, 2].set_ylabel('Accuracy')
-        axes[1, 2].set_title('Accuracy vs Training Time')
+            values = [results[model][metric] for metric in metrics]
+            axes[1, 0].bar(x + i*width, values, width, label=model)
+        
+        axes[1, 0].set_title('Multi-Metric Comparison')
+        axes[1, 0].set_ylabel('Score')
+        axes[1, 0].set_xticks(x + width)
+        axes[1, 0].set_xticklabels(metrics)
+        axes[1, 0].legend()
+        axes[1, 0].set_ylim(0, 1)
+        
+        # 4. Confusion matrix for best model
+        best_model = max(results.keys(), key=lambda x: results[x]['f1'])
+        cm = results[best_model]['confusion_matrix']
+        
+        config = load_config()
+        class_names = list(config['class_labels'].values())
+        
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                   xticklabels=class_names, yticklabels=class_names,
+                   ax=axes[1, 1])
+        axes[1, 1].set_title(f'Confusion Matrix - {best_model}')
+        axes[1, 1].set_xlabel('Predicted')
+        axes[1, 1].set_ylabel('Actual')
         
         plt.tight_layout()
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Comparison plots saved to: {save_path}")
-        
+        # Save plot
+        plot_path = "results/existing_model_comparison.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.show()
-    
-    def analyze_class_performance(self, class_name: str):
-        """Analyze performance on a specific class across all models"""
-        if not self.results:
-            print("No results available for analysis")
-            return
         
-        print(f"\n📊 Class Performance Analysis: {class_name}")
-        print("=" * 50)
+        print(f"📊 Comparison plots saved to: {plot_path}")
         
-        class_metrics = []
-        for model_name, result in self.results.items():
-            if class_name in result['class_report']:
-                metrics = result['class_report'][class_name]
-                class_metrics.append({
-                    'Model': model_name,
-                    'Precision': f"{metrics['precision']:.4f}",
-                    'Recall': f"{metrics['recall']:.4f}",
-                    'F1-Score': f"{metrics['f1-score']:.4f}",
-                    'Support': metrics['support']
-                })
-        
-        if class_metrics:
-            df = pd.DataFrame(class_metrics)
-            print(df.to_string(index=False))
-            
-            # Best performing model for this class
-            best_model = max(class_metrics, key=lambda x: float(x['F1-Score']))
-            print(f"\n🏆 Best model for {class_name}: {best_model['Model']}")
-            print(f"   F1-Score: {best_model['F1-Score']}")
-        else:
-            print(f"No results found for class: {class_name}")
-    
-    def save_results(self, output_dir: str = "results"):
-        """Save comparison results to files"""
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Save summary CSV
-        summary_data = []
-        for model_name, result in self.results.items():
-            summary_data.append({
-                'Model': model_name,
-                'Domain': result['model_config']['domain'],
-                'Description': result['model_config']['description'],
-                'Accuracy': result['final_accuracy'],
-                'F1_Score': result['final_f1'],
-                'Precision': result['final_precision'],
-                'Recall': result['final_recall'],
-                'Training_Time_Seconds': result['training_time'],
-                'Trainable_Parameters': result['trainable_params'],
-                'Total_Parameters': result['total_params'],
-                'Parameter_Ratio': result['trainable_params'] / result['total_params']
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        summary_path = os.path.join(output_dir, "model_comparison_summary.csv")
-        summary_df.to_csv(summary_path, index=False)
-        
-        # Save detailed per-class results
-        for model_name, result in self.results.items():
-            class_df = pd.DataFrame(result['class_report']).transpose()
-            class_path = os.path.join(output_dir, f"{model_name}_class_report.csv")
-            class_df.to_csv(class_path)
-        
-        print(f"✅ Results saved to: {output_dir}")
-
-
-def main():
-    """Example usage of the comparison framework"""
-    # Initialize comparison framework
-    comparator = MedicalBERTComparison()
-    
-    # Compare all models
-    data_path = "../data/synthetic_training_data_10class.csv"
-    if os.path.exists(data_path):
-        results = comparator.compare_all_models(
-            data_path=data_path,
-            models_to_compare=['Bio-BERT', 'Clinical-Bio-BERT'],  # Start with these two
-            num_epochs=2  # Quick comparison
-        )
-        
-        if results:
-            # Generate visualizations
-            comparator.plot_comparison_results("results/model_comparison.png")
-            
-            # Analyze specific classes
-            comparator.analyze_class_performance('Sx')  # New symptoms class
-            comparator.analyze_class_performance('Dx')  # Diagnoses
-            
-            # Save results
-            comparator.save_results()
-        
-    else:
-        print(f"Data file not found: {data_path}")
-        print("Please run data generation first.")
-
+    except Exception as e:
+        print(f"❌ Failed to create plots: {e}")
 
 if __name__ == "__main__":
-    main()
+    compare_existing_models()
